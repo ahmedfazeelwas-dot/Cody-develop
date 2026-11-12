@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Code Master</title>
+<style>
+  :root{--bg:#0f1117;--card:#181b24;--line:#2a2f3d;--txt:#e7e9ee;--mut:#8b91a3;--acc:#6c8cff;--ok:#3ecf8e;--err:#ff6b6b}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:15px/1.5 system-ui,sans-serif}
+  .wrap{max-width:960px;margin:0 auto;padding:24px 16px 60px}
+  h1{margin:0 0 16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+  textarea,select{width:100%;background:#0f1117;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:10px;font:inherit}
+  textarea{min-height:90px;resize:vertical}
+  button{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:10px 18px;font:inherit;font-weight:600;cursor:pointer}
+  button.sec{background:#262b3a;padding:6px 12px;font-size:13px}
+  button:disabled{opacity:.5}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+  .chips label{border:1px solid var(--line);border-radius:999px;padding:4px 12px;cursor:pointer;font-size:14px}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0}
+  .pill{padding:4px 10px;border-radius:999px;border:1px solid var(--line);font-size:13px}
+  .pill.ok{color:var(--ok)} .pill.fail{color:var(--err)} .pill.run{color:var(--acc)}
+  pre{background:#0b0d12;border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto;max-height:480px;white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,Consolas,monospace}
+  iframe{width:100%;height:480px;border:1px solid var(--line);border-radius:8px;background:#fff;margin-top:10px}
+  .hide{display:none}
+  #conn{font-size:13px;color:var(--mut)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>⚡ Code Master <span id="conn">connecting to agent...</span></h1>
+
+  <div class="card">
+    <textarea id="task" placeholder="e.g. write code of a simple car game in a single HTML file"></textarea>
+    <div class="chips" id="chips"></div>
+    <div class="bar">
+      <button id="run">Run Code Master</button>
+      <span>Final code by:</span>
+      <select id="merger" style="width:auto"></select>
+    </div>
+    <div class="bar" id="status"></div>
+  </div>
+
+  <div class="card hide" id="finalCard">
+    <h3 style="margin-top:0">Final code</h3>
+    <div class="bar">
+      <button class="sec" id="copy">Copy</button>
+      <button class="sec" id="dl">Download</button>
+      <button class="sec" id="prev">Preview (HTML)</button>
+    </div>
+    <pre id="final"></pre>
+    <iframe id="frame" class="hide" sandbox="allow-scripts"></iframe>
+  </div>
+
+  <div class="card hide" id="allCard">
+    <h3 style="margin-top:0">Individual answers</h3>
+    <div class="bar" id="tabs"></div>
+    <pre id="answer"></pre>
+  </div>
+</div>
+
+<script>
+const API = "http://localhost:8765";
+const $ = id => document.getElementById(id);
+let sites = [], finalCode = "", lastState = "idle", timer = null;
+
+function extractCode(t){
+  const m=[...t.matchAll(/```[\w+#-]*\n([\s\S]*?)```/g)].map(x=>x[1]);
+  return m.length ? m.sort((a,b)=>b.length-a.length)[0].trim() : t.trim();
+}
+
+async function poll(){
+  try{
+    const s = await (await fetch(API+"/status")).json();
+    $("conn").textContent = "● agent connected"; $("conn").style.color = "var(--ok)";
+    if(!sites.length){
+      sites = s.sites;
+      $("chips").innerHTML = sites.map(n=>`<label><input type="checkbox" value="${n}" checked> ${n}</label>`).join("");
+      $("merger").innerHTML = sites.map(n=>`<option ${n==="Claude"?"selected":""}>${n}</option>`).join("");
+    }
+    $("status").innerHTML = Object.entries(s.ais).map(([n,v])=>{
+      const c = v.startsWith("failed")?"fail":(v.startsWith("done")||v.includes("ready"))?"ok":"run";
+      return `<span class="pill ${c}">${n} — ${v}</span>`;
+    }).join("");
+    $("run").disabled = s.state === "running";
+    if(s.state === "done" && lastState === "running") show(s);
+    lastState = s.state;
+  }catch(e){
+    $("conn").textContent = "● agent not running (start agent_server.py)"; $("conn").style.color = "var(--err)";
+  }
+}
+
+function show(s){
+  finalCode = extractCode(s.final || "");
+  $("final").textContent = finalCode || "(no result)";
+  $("finalCard").classList.remove("hide");
+  const names = Object.keys(s.answers);
+  $("tabs").innerHTML = "";
+  names.forEach((n,i)=>{
+    const b = document.createElement("button"); b.className = "sec"; b.textContent = n;
+    b.onclick = () => $("answer").textContent = s.answers[n];
+    $("tabs").appendChild(b);
+    if(i===0) $("answer").textContent = s.answers[n];
+  });
+  if(names.length) $("allCard").classList.remove("hide");
+}
+
+$("run").onclick = async () => {
+  const task = $("task").value.trim();
+  const names = [...document.querySelectorAll("#chips input:checked")].map(i=>i.value);
+  if(!task || !names.length) return alert("Type a command and pick at least one AI.");
+  $("finalCard").classList.add("hide"); $("allCard").classList.add("hide"); $("frame").classList.add("hide");
+  const r = await fetch(API+"/run", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({task, names, merger: $("merger").value})});
+  if(!r.ok) alert("Agent is busy or not ready.");
+  lastState = "running";
+};
+
+$("copy").onclick = async () => { await navigator.clipboard.writeText(finalCode); $("copy").textContent = "Copied ✓"; setTimeout(()=>$("copy").textContent="Copy",1500); };
+$("dl").onclick = () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([finalCode],{type:"text/plain"}));
+  a.download = /<html|<!doctype|<canvas/i.test(finalCode) ? "final_code.html" : "final_code.txt"; a.click();
+};
+$("prev").onclick = () => { $("frame").srcdoc = finalCode; $("frame").classList.remove("hide"); };
+
+poll(); timer = setInterval(poll, 1000);
+</script>
+</body>
+</html>
